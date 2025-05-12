@@ -1,0 +1,16 @@
+name: PKD-SLT
+data:
+    data_path: ./data/
+    version: PDK-SLT1.0
+    sgn: sign
+    txt: text
+    gls: gloss
+    train: PHOENIX2014T/phoenix14t.pami0.train
+    dev: PHOENIX2014T/phoenix14t.pami0.dev
+    test: PHOENIX2014T/phoenix14t.pami0.test
+    feature_size: 783
+    level: word
+    txt_lowercase: true
+    max_sent_length: 400
+    random_train_subset: -1
+    random_dev_subset: -1
