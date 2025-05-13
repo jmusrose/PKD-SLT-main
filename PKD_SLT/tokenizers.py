@@ -1,6 +1,6 @@
 
 
-from typing import Dict
+from typing import Dict, Union, List
 from PKD_SLT.helpers_for_ddp import get_logger
 from PKD_SLT.helpers import remove_extra_spaces, unicode_normalize
 logger = get_logger(__name__)
@@ -56,6 +56,57 @@ class BasicTokenizer:
             return None
         return sequence
 
+    def _remove_special(self, sequence: List[str], generate_unk: bool = False):
+        specials = self.specials if generate_unk else self.specials + [self.unk_token]
+        valid = [token for token in sequence if token not in specials]
+        if len(valid) == 0:  # if empty, return <unk>
+            valid = [self.unk_token]
+        return valid
+
+    def post_process(
+            self,
+            sequence: Union[List[str], str],
+            generate_unk: bool = True,
+            cut_at_sep: bool = True
+        ) -> str:
+        if isinstance(sequence, list):
+            if cut_at_sep:
+                try:
+                    sep_pos = sequence.index(self.sep_token)  # cut off prompt
+                    sequence = sequence[sep_pos + 1:]
+
+                except ValueError as e:  # pylint: disable=unused-variable # noqa: F841
+                    pass
+            sequence = self._remove_special(sequence, generate_unk=generate_unk)
+            sequence = self.SPACE.join(sequence)
+            # Remove extra spaces
+        if self.normalize:
+            sequence = remove_extra_spaces(sequence)
+
+        # ensure the string is not empty.
+        assert sequence is not None and len(sequence) > 0, sequence
+        return sequence
+
+    def set_vocab(self, vocab) -> None:
+        """
+        Set vocab
+        :param vocab: (Vocabulary)
+        """
+        # pylint: disable=attribute-defined-outside-init
+        self.unk_token = vocab.specials[vocab.unk_index]
+        self.eos_token = vocab.specials[vocab.eos_index]
+        self.sep_token = vocab.specials[vocab.sep_index] if vocab.sep_index else None
+        specials = vocab.specials + vocab.lang_tags
+        self.specials = [token for token in specials if token != self.unk_token]
+        self.lang_tags = vocab.lang_tags
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}(level={self.level}, "
+            f"lowercase={self.lowercase}, normalize={self.normalize}, "
+            f"filter_by_length=({self.min_length}, {self.max_length}), "
+            f"pretokenizer={self.pretokenizer})"
+        )
 
 
 def _build_tokenizer(cfg: Dict) -> BasicTokenizer:
