@@ -1,11 +1,16 @@
-name: PKD-SLT
+name: PKD_SLT
+model_dir: "SLT-Transformer"
+use_cuda: True
+fp16: True
+random_seed: 42
+
 data:
     data_path: ./data/
     version: PDK-SLT1.0
     sgn: sign
     txt: text
     gls: gloss
-    train: PHOENIX2014T/phoenix14t.pami0.train
+    train: data/train_data.pkl.gz
     dev: PHOENIX2014T/phoenix14t.pami0.dev
     test: PHOENIX2014T/phoenix14t.pami0.test
     feature_size: 783
@@ -14,3 +19,35 @@ data:
     max_sent_length: 400
     random_train_subset: -1
     random_dev_subset: -1
+    special_symbols: # special symbols
+        unk_token: "<unk>"          # surface form for unknown token
+        pad_token: "<pad>"          # surface form for pad token
+        bos_token: "<s>"            # surface form for begin-of-sentence token
+        eos_token: "</s>"           # surface form for end-of-sensente token
+        #sep_token: "<sep>"          # surface form for separator; Used for prompt
+        unk_id: 0                   # unknown token index
+        pad_id: 1                   # pad token index
+        bos_id: 2                   # begin-of-sentence token index
+        eos_id: 3                   # end-of-sensence token index
+        #sep_id: 4                   # separator token index
+        #lang_tags: ["<de>", "<en>"] # language tags; Used for multi-task training
+    trg:
+        level: word
+        lowercase: True
+        normalize: True
+        max_length: 30
+        min_length: 1
+
+
+
+
+training:
+    overwrite: True
+#    num_workers: 0
+
+testing:
+    nun: 1
+
+model:
+    model: True
+
