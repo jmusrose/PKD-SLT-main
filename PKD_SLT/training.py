@@ -4,6 +4,7 @@ from pathlib import Path
 from PKD_SLT.helpers_for_ddp import get_logger
 from PKD_SLT.version import ddp_setup
 from PKD_SLT.config import log_config, parse_global_args
+from PKD_SLT.prediction import prepare
 
 def train(rank: int, world_size: int, cfg: Dict, skip_test: bool = False):
 
@@ -20,7 +21,7 @@ def train(rank: int, world_size: int, cfg: Dict, skip_test: bool = False):
     # 编写日志
     log_config(cfg)
     args = parse_global_args(cfg, rank=rank, mode="train")
-    print(args)
-
+    # print(args)
+    prepare(args, rank=rank, mode="train")
 
 

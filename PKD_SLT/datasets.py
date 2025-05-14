@@ -4,6 +4,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 from torch.utils.data import BatchSampler, DataLoader, Dataset, Sampler
+from PKD_SLT.tokenizers import BasicTokenizer
 
 
 
@@ -302,3 +303,121 @@ class BaseDataset(Dataset):
             f"has_src_prompt={self.has_prompt[self.src_lang]}, "
             f"has_trg_prompt={self.has_prompt[self.trg_lang]})"
         )
+
+class PlaintextDataset(BaseDataset):
+    """
+    PlaintextDataset which stores plain text pairs.
+    - used for text file data in the format of one sentence per line.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        src_lang: str,
+        trg_lang: str,
+        split: str = "train",
+        has_trg: bool = False,
+        has_prompt: Dict[str, bool] = None,
+        tokenizer: Dict[str, BasicTokenizer] = None,
+        sequence_encoder: Dict[str, Callable] = None,
+        random_subset: int = -1,
+        **kwargs
+    ):
+
+        super().__init__(
+            path=path,
+            src_lang=src_lang,
+            trg_lang=trg_lang,
+            split=split,
+            has_trg=has_trg,
+            has_prompt=has_prompt,
+            tokenizer=tokenizer,
+            sequence_encoder=sequence_encoder,
+            random_subset=random_subset
+        )
+
+        # load data
+        self.data = self.load_data(path, **kwargs)
+        self.reset_indices()
+
+    def load_data(self, path: str, **kwargs) -> Any:
+
+        def _pre_process(seq, lang):
+            if self.tokenizer[lang] is not None:
+                seq = [self.tokenizer[lang].pre_process(s) for s in seq if len(s) > 0]
+            return seq
+
+        path = Path(path)
+        src_file = path.with_suffix(f"{path.suffix}.{self.src_lang}")
+        assert src_file.is_file(), f"{src_file} not found. Abort."
+
+        src_list = read_list_from_file(src_file)
+        data = {self.src_lang: _pre_process(src_list, self.src_lang)}
+
+        if self.has_trg:
+            trg_file = path.with_suffix(f"{path.suffix}.{self.trg_lang}")
+            assert trg_file.is_file(), f"{trg_file} not found. Abort."
+
+            trg_list = read_list_from_file(trg_file)
+            data[self.trg_lang] = _pre_process(trg_list, self.trg_lang)
+            assert len(src_list) == len(trg_list)
+        return data
+
+    def lookup_item(self, idx: int, lang: str) -> Tuple[str, str]:
+        try:
+            line = self.data[lang][idx]
+            prompt = (
+                self.data[f"{lang}_prompt"][idx]
+                if f"{lang}_prompt" in self.data else None
+            )
+            return line, prompt
+        except Exception as e:
+            logger.error(idx, e)
+            raise ValueError from e
+
+    def get_list(self,
+                 lang: str,
+                 tokenized: bool = False,
+                 subsampled: bool = True) -> Union[List[str], List[List[str]]]:
+        """
+        Return list of preprocessed sentences in the given language.
+        (not length-filtered, no bpe-dropout)
+        """
+        indices = self.indices if subsampled else range(self.__len__())
+        item_list = []
+        for idx in indices:
+            item, _ = self.lookup_item(idx, lang)
+            if tokenized:
+                item = self.tokenizer[lang](item, is_train=False)
+            item_list.append(item)
+        assert len(indices) == len(item_list), (len(indices), len(item_list))
+        return item_list
+
+    def __len__(self) -> int:
+        return len(self.data[self.src_lang])
+
+
+def build_dataset(
+            dataset_type: str,
+            path: str,
+            src_lang: str,
+            trg_lang: str,
+            split: str,
+            tokenizer: Dict = None,
+            sequence_encoder: Dict = None,
+            random_subset: int = -1,
+            **kwargs,
+    ):
+    dataset = None
+    has_trg = True  # by default, we expect src-trg pairs
+    _placeholder = {src_lang: None, trg_lang: None}
+    tokenizer = _placeholder if tokenizer is None else tokenizer
+    sequence_encoder = _placeholder if sequence_encoder is None else sequence_encoder
+    if not Path(path).with_suffix(f"{Path(path).suffix}.{trg_lang}").is_file():
+        has_trg = False  # no target is given -> create dataset from src only
+        print("666")
+        dataset = SignDataset(
+
+        )
+
+

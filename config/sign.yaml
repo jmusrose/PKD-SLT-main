@@ -6,13 +6,14 @@ random_seed: 42
 
 data:
     data_path: ./data/
+    dataset_type: "plain"
     version: PDK-SLT1.0
     sgn: sign
     txt: text
     gls: gloss
-    train: data/train_data.pkl.gz
-    dev: PHOENIX2014T/phoenix14t.pami0.dev
-    test: PHOENIX2014T/phoenix14t.pami0.test
+    train: data/train_data.pkl.train
+    dev: data/dev_data.pkl.dev
+    test: data/test_data.pkl.test
     feature_size: 783
     level: word
     txt_lowercase: true
@@ -31,8 +32,12 @@ data:
         eos_id: 3                   # end-of-sensence token index
         #sep_id: 4                   # separator token index
         #lang_tags: ["<de>", "<en>"] # language tags; Used for multi-task training
+    src:
+        level: sgn
+        lang: sign
     trg:
         level: word
+        lang: de
         lowercase: True
         normalize: True
         max_length: 30
