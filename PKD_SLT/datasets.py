@@ -11,6 +11,7 @@ from torch.utils.data import BatchSampler, DataLoader, Dataset, Sampler
 from PKD_SLT.tokenizers import BasicTokenizer
 from torch.utils.data import BatchSampler, DataLoader, Dataset, Sampler
 from PKD_SLT.config import ConfigurationError
+from PKD_SLT.batch import Batch
 from PKD_SLT.helpers_for_ddp import get_logger
 from PKD_SLT.helpers_for_ddp import (
     DistributedSubsetSampler,
@@ -293,7 +294,7 @@ class BaseDataset(Dataset):
         batch_sampler.set_seed(seed)  # set seed and resample
 
         # ensure that sequence_encoder (padding func) exists
-        assert self.sequence_encoder[self.src_lang] is not None
+        # assert self.sequence_encoder[self.src_lang] is not None
         if self.has_trg:
             assert self.sequence_encoder[self.trg_lang] is not None
 
@@ -464,6 +465,72 @@ class SignDataset(BaseDataset):
         assert len(indices) == len(item_list), (len(indices), len(item_list))
         return item_list
 
+    def collate_fn(
+        self,
+        batch: List[Tuple],
+        pad_index: int,
+        eos_index: int,
+        device: torch.device = CPU_DEVICE,
+    ) -> Batch:
+        """
+        Custom collate function for sign language data.
+
+        :param batch: list of (idx, src, trg) tuples
+        :param pad_index: padding token index
+        :param eos_index: end of sequence token index
+        :param device: target device
+        :return: Batch object
+        """
+        idx, src_list, trg_list = zip(*batch)
+        assert len(batch) == len(src_list) == len(trg_list), (len(batch), len(src_list))
+        assert all(s is not None for s in src_list), src_list
+
+        # handle source (sign features)
+        max_src_len = max(x.shape[0] for x in src_list)
+        feature_dim = src_list[0].shape[1]
+        src_lengths = []
+        padded_src = []
+
+        for sign_tensor in src_list:
+            src_len = sign_tensor.shape[0]
+            src_lengths.append(src_len)
+
+            if src_len < max_src_len:
+                padding = np.zeros((max_src_len - src_len, feature_dim), dtype=np.float32)
+                padded_tensor = np.concatenate([sign_tensor, padding], axis=0)
+            else:
+                padded_tensor = sign_tensor
+
+            padded_src.append(padded_tensor)
+
+        src = torch.tensor(np.array(padded_src)).float()
+        src_length = torch.tensor(src_lengths).long()
+
+        # handle target (text translations)
+        if self.has_trg or self.has_prompt[self.trg_lang]:
+            if self.has_trg:
+                assert all(t is not None for t in trg_list), trg_list
+            trg, _, trg_prompt_mask = self.sequence_encoder[self.trg_lang](
+                trg_list, bos=True, eos=self.has_trg
+            )
+        else:
+            assert all(t is None for t in trg_list)
+            trg, trg_prompt_mask = None, None
+
+        return Batch(
+            src=src,
+            src_length=src_length,
+            src_prompt_mask=None,  # no source prompt mask for sign language
+            trg=torch.tensor(trg).long() if trg is not None else None,
+            trg_prompt_mask=torch.tensor(trg_prompt_mask).long() if trg_prompt_mask is not None else None,
+            indices=torch.tensor(idx).long(),
+            device=device,
+            pad_index=pad_index,
+            eos_index=eos_index,
+            is_train=self.split == "train",
+        )
+
+
     def __len__(self) -> int:
         """
         Return the size of the dataset.
@@ -503,8 +570,7 @@ def build_dataset(
         random_subset=random_subset,
         **kwargs,
     )
-    print(dataset[0])
-    print(dataset[1])
+    return dataset
 
 
 class SentenceBatchSampler(BatchSampler):
