@@ -56,6 +56,15 @@ class BasicTokenizer:
             return None
         return sequence
 
+    def _filter_by_length(self, length: int) -> bool:
+        """
+        Check if the given seq length is out of the valid range.
+
+        :param length: (int) number of tokens
+        :return: True if the length is invalid(= to be filtered out), False if valid.
+        """
+        return length > self.max_length > 0 or self.min_length > length > 0
+
     def _remove_special(self, sequence: List[str], generate_unk: bool = False):
         specials = self.specials if generate_unk else self.specials + [self.unk_token]
         valid = [token for token in sequence if token not in specials]
@@ -105,7 +114,7 @@ class BasicTokenizer:
             f"{self.__class__.__name__}(level={self.level}, "
             f"lowercase={self.lowercase}, normalize={self.normalize}, "
             f"filter_by_length=({self.min_length}, {self.max_length}), "
-            f"pretokenizer={self.pretokenizer})"
+            # f"pretokenizer={self.pretokenizer})"
         )
 
 

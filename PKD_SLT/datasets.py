@@ -1,14 +1,32 @@
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-
+import json
+import os
 import torch
+import pickle
+import numpy as np
+import gzip
 from torch.utils.data import BatchSampler, DataLoader, Dataset, Sampler
 from PKD_SLT.tokenizers import BasicTokenizer
+from torch.utils.data import BatchSampler, DataLoader, Dataset, Sampler
+from PKD_SLT.config import ConfigurationError
+from PKD_SLT.helpers_for_ddp import get_logger
+from PKD_SLT.helpers_for_ddp import (
+    DistributedSubsetSampler,
+    RandomSubsetSampler,
+    get_logger,
+    use_ddp,
+)
+
+logger = get_logger(__name__)
+CPU_DEVICE = torch.device("cpu")
 
 
-
-
+def load_dataset_file(filename):
+    with gzip.open(filename, "rb") as f:
+        loaded_object = pickle.load(f)
+        return loaded_object
 
 class BaseDataset(Dataset):
     """
@@ -304,7 +322,7 @@ class BaseDataset(Dataset):
             f"has_trg_prompt={self.has_prompt[self.trg_lang]})"
         )
 
-class PlaintextDataset(BaseDataset):
+class SignDataset(BaseDataset):
     """
     PlaintextDataset which stores plain text pairs.
     - used for text file data in the format of one sentence per line.
@@ -321,6 +339,7 @@ class PlaintextDataset(BaseDataset):
         tokenizer: Dict[str, BasicTokenizer] = None,
         sequence_encoder: Dict[str, Callable] = None,
         random_subset: int = -1,
+        max_seq_length: Optional[int] = None,
         **kwargs
     ):
 
@@ -335,66 +354,126 @@ class PlaintextDataset(BaseDataset):
             sequence_encoder=sequence_encoder,
             random_subset=random_subset
         )
-
+        self.max_seq_length = max_seq_length
         # load data
         self.data = self.load_data(path, **kwargs)
         self.reset_indices()
 
+
     def load_data(self, path: str, **kwargs) -> Any:
 
-        def _pre_process(seq, lang):
-            if self.tokenizer[lang] is not None:
-                seq = [self.tokenizer[lang].pre_process(s) for s in seq if len(s) > 0]
-            return seq
+        data = load_dataset_file(path)
+        sign_data = {}
 
-        path = Path(path)
-        src_file = path.with_suffix(f"{path.suffix}.{self.src_lang}")
-        assert src_file.is_file(), f"{src_file} not found. Abort."
-
-        src_list = read_list_from_file(src_file)
-        data = {self.src_lang: _pre_process(src_list, self.src_lang)}
-
+        # Ensure we have 'sign' data as src and 'translation' as trg
+        sign_data[self.src_lang] = []
         if self.has_trg:
-            trg_file = path.with_suffix(f"{path.suffix}.{self.trg_lang}")
-            assert trg_file.is_file(), f"{trg_file} not found. Abort."
+            sign_data[self.trg_lang] = []
+            # Process each item in the data
+        del data[0]
+        for item in data:
+            # Convert sign tensor from list to numpy array
+            if isinstance(item['sign'], list):
+                # If sign is a list of tensors, we take the first one
+                sign_tensor = np.array(item['sign'][0], dtype=np.float32)
+            else:
+                sign_tensor = np.array(item['sign'], dtype=np.float32)
 
-            trg_list = read_list_from_file(trg_file)
-            data[self.trg_lang] = _pre_process(trg_list, self.trg_lang)
-            assert len(src_list) == len(trg_list)
-        return data
+            # Apply sequence length constraints if specified
+            if self.max_seq_length is not None:
+                if sign_tensor.shape[0] > self.max_seq_length:
+                    # Truncate if too long
+                    sign_tensor = sign_tensor[:self.max_seq_length, :]
+                elif sign_tensor.shape[0] < self.max_seq_length:
+                    # Pad with zeros if too short
+                    padding = np.zeros(
+                        (self.max_seq_length - sign_tensor.shape[0], sign_tensor.shape[1]),
+                        dtype=np.float32
+                    )
+                    sign_tensor = np.concatenate([sign_tensor, padding], axis=0)
 
-    def lookup_item(self, idx: int, lang: str) -> Tuple[str, str]:
+            sign_data[self.src_lang].append(sign_tensor)
+
+            if self.has_trg:
+                translation = item.get('translation', '')
+                # Apply text preprocessing if needed
+                if self.tokenizer[self.trg_lang] is not None:
+                    translation = self.tokenizer[self.trg_lang].pre_process(translation)
+                sign_data[self.trg_lang].append(translation)
+
+        return sign_data
+
+
+    def lookup_item(self, idx: int, lang: str) -> Tuple[Any, str]:
+        """
+        Look up one item of the given index and language.
+
+        :param idx: index of the item to look up
+        :param lang: language code
+        :return: (item, prompt) tuple where item is the sign tensor or text translation
+        """
         try:
-            line = self.data[lang][idx]
-            prompt = (
-                self.data[f"{lang}_prompt"][idx]
-                if f"{lang}_prompt" in self.data else None
-            )
-            return line, prompt
+            item = self.data[lang][idx]
+            # No prompt for sign language data
+            prompt = None
+            return item, prompt
         except Exception as e:
-            logger.error(idx, e)
+            logger.error(f"Error looking up item {idx} for language {lang}: {e}")
             raise ValueError from e
 
-    def get_list(self,
-                 lang: str,
-                 tokenized: bool = False,
-                 subsampled: bool = True) -> Union[List[str], List[List[str]]]:
+
+    def get_item(self, idx: int, lang: str, is_train: bool = None) -> Any:
         """
-        Return list of preprocessed sentences in the given language.
-        (not length-filtered, no bpe-dropout)
+        Get one src/trg item of the given index.
+
+        :param idx: index of the item to get
+        :param lang: language code
+        :param is_train: boolean indicating if it's training mode
+        :return: sign tensor or tokenized text
+        """
+        item, prompt = self.lookup_item(idx, lang)
+
+        # For target language, apply tokenization
+        if lang == self.trg_lang and self.tokenizer[lang] is not None:
+            is_train = self.split == "train" if is_train is None else is_train
+            item = self.tokenizer[lang](item, is_train=is_train)
+
+        # For source language (sign), item is already a tensor
+        return item
+
+    def get_list(self, lang: str, tokenized: bool = False, subsampled: bool = True) -> Union[List[Any], List[str]]:
+        """
+        Return list of items in the given language.
+
+        :param lang: language code
+        :param tokenized: whether to tokenize the text (only applicable for trg)
+        :param subsampled: whether to apply subsampling
+        :return: list of sign tensors or text translations
         """
         indices = self.indices if subsampled else range(self.__len__())
         item_list = []
+
         for idx in indices:
             item, _ = self.lookup_item(idx, lang)
-            if tokenized:
+
+            if lang == self.trg_lang and tokenized and self.tokenizer[lang] is not None:
                 item = self.tokenizer[lang](item, is_train=False)
+
             item_list.append(item)
+
         assert len(indices) == len(item_list), (len(indices), len(item_list))
         return item_list
 
     def __len__(self) -> int:
+        """
+        Return the size of the dataset.
+
+        :return: Number of samples in the dataset
+        """
         return len(self.data[self.src_lang])
+
+
+
 
 
 def build_dataset(
@@ -413,11 +492,150 @@ def build_dataset(
     _placeholder = {src_lang: None, trg_lang: None}
     tokenizer = _placeholder if tokenizer is None else tokenizer
     sequence_encoder = _placeholder if sequence_encoder is None else sequence_encoder
-    if not Path(path).with_suffix(f"{Path(path).suffix}.{trg_lang}").is_file():
-        has_trg = False  # no target is given -> create dataset from src only
-        print("666")
-        dataset = SignDataset(
+    dataset = SignDataset(
+        path=path,
+        src_lang=src_lang,
+        trg_lang=trg_lang,
+        split=split,
+        has_trg=True,
+        tokenizer=tokenizer,
+        sequence_encoder=sequence_encoder,
+        random_subset=random_subset,
+        **kwargs,
+    )
+    print(dataset[0])
+    print(dataset[1])
 
-        )
+
+class SentenceBatchSampler(BatchSampler):
+    """
+    Wraps another sampler to yield a mini-batch of indices based on num of instances.
+    An instance longer than dataset.max_len will be filtered out.
+
+    :param sampler: Base sampler. Can be any iterable object
+    :param batch_size: Size of mini-batch.
+    :param drop_last: If `True`, the sampler will drop the last batch if its size
+        would be less than `batch_size`
+    """
+
+    def __init__(self, sampler: Sampler, batch_size: int, drop_last: bool, seed: int):
+        super().__init__(sampler, batch_size, drop_last)
+        self.seed = seed
+
+    @property
+    def num_samples(self) -> int:
+        """
+        Returns number of samples in the dataset.
+        This may change during sampling.
+
+        Note: len(dataset) won't change during sampling.
+              Use len(dataset) instead, to retrieve the original dataset length.
+        """
+        assert self.sampler.data_source.indices is not None
+        try:
+            return len(self.sampler)
+        except NotImplementedError as e:  # pylint: disable=unused-variable # noqa: F841
+            return len(self.sampler.data_source.indices)
+
+    def __iter__(self):
+        batch = []
+        d = self.sampler.data_source
+
+        for idx in self.sampler:
+            _, src, trg = d[idx]  # pylint: disable=unused-variable
+            if src is not None:  # otherwise drop instance
+                batch.append(idx)
+
+                if len(batch) >= self.batch_size:
+                    yield batch
+                    batch = []
+
+        if len(batch) > 0:
+            if not self.drop_last:
+                yield batch
+            else:
+                logger.warning(f"Drop indices {batch}.")
+
+    def __len__(self) -> int:
+        # pylint: disable=no-else-return
+        if self.drop_last:
+            return self.num_samples // self.batch_size
+        else:
+            return (self.num_samples + self.batch_size - 1) // self.batch_size
+
+    def set_seed(self, seed: int) -> None:
+        assert seed is not None, seed
+        self.sampler.data_source.seed = seed
+
+        if hasattr(self.sampler, 'set_seed'):
+            self.sampler.set_seed(seed)  # set seed and resample
+        elif hasattr(self.sampler, 'generator'):
+            self.sampler.generator.manual_seed(seed)
+
+        if self.num_samples < len(self.sampler.data_source):
+            logger.info(
+                "Sample random subset from %s data: n=%d, seed=%d",
+                self.sampler.data_source.split, self.num_samples, seed
+            )
+
+    def reset(self) -> None:
+        if hasattr(self.sampler, 'reset'):
+            self.sampler.reset()
+
+    def get_state(self):
+        if hasattr(self.sampler, 'generator'):
+            return self.sampler.generator.get_state()
+        return None
+
+    def set_state(self, state) -> None:
+        if hasattr(self.sampler, 'generator'):
+            self.sampler.generator.set_state(state)
 
 
+class TokenBatchSampler(SentenceBatchSampler):
+    """
+    Wraps another sampler to yield a mini-batch of indices based on num of tokens
+    (incl. padding). An instance longer than dataset.max_len or shorter than
+    dataset.min_len will be filtered out.
+    * no bucketing implemented
+
+    .. warning::
+        In DDP, we shouldn't use TokenBatchSampler for prediction, because we cannot
+        ensure that the data points will be distributed evenly across devices.
+        `ddp_merge()` (`dist.all_gather()`) called in `predict()` can get stuck.
+
+    :param sampler: Base sampler. Can be any iterable object
+    :param batch_size: Size of mini-batch.
+    :param drop_last: If `True`, the sampler will drop the last batch if
+            its size would be less than `batch_size`
+    """
+
+    def __iter__(self):
+        """yields list of indices"""
+        batch = []
+        max_tokens = 0
+        d = self.sampler.data_source
+
+        for idx in self.sampler:
+            _, src, trg = d[idx]  # call __getitem__()
+            if src is not None:  # otherwise drop instance
+                src_len = 0 if src is None else len(src)
+                trg_len = 0 if trg is None else len(trg)
+                n_tokens = 0 if src_len == 0 else max(src_len + 1, trg_len + 1)
+                batch.append(idx)
+
+                if n_tokens > max_tokens:
+                    max_tokens = n_tokens
+                if max_tokens * len(batch) >= self.batch_size:
+                    yield batch
+                    batch = []
+                    max_tokens = 0
+
+        if len(batch) > 0:
+            if not self.drop_last:
+                yield batch
+            else:
+                logger.warning(f"Drop indices {batch}.")
+
+    def __len__(self):
+        raise NotImplementedError
