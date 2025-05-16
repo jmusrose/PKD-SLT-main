@@ -55,4 +55,35 @@ testing:
 
 model:
     model: True
+    encoder:
+        type: transformer
+        num_layers: 3
+        num_heads: 8
+        embedding:
+            embedding_dim: 512
+            scale: false
+            dropout: 0.1
+            norm_type: batch
+            activation_type: softsign
+        hidden_size: 512
+        ff_size: 2048
+        dropout: 0.1
+        layer_norm: "pre"
+        activation: "relu"
+    decoder:
+        type: transformer
+        num_layers: 4
+        num_heads: 8
+        embedding:
+            embedding_dim: 512
+            scale: false
+            dropout: 0.1
+            norm_type: batch
+#            activation_type: softsign  #词嵌入不需要激活函数
+        hidden_size: 512
+        ff_size: 2048
+        dropout: 0.1
+        layer_norm: "pre"
+        activation: "relu"
+
 

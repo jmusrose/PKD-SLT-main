@@ -317,10 +317,8 @@ class BaseDataset(Dataset):
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}(split={self.split}, len={self.__len__()}, "
-            f'src_lang="{self.src_lang}", trg_lang="{self.trg_lang}", '
-            f"has_trg={self.has_trg}, random_subset={self.random_subset}, "
-            f"has_src_prompt={self.has_prompt[self.src_lang]}, "
-            f"has_trg_prompt={self.has_prompt[self.trg_lang]})"
+            f'trg_lang="{self.trg_lang}", '
+            f" random_subset={self.random_subset}, "
         )
 
 class SignDataset(BaseDataset):
